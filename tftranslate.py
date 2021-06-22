@@ -21,30 +21,34 @@ LABEL_MAP_NAME = 'data/label_map.pbtxt'
 labels = []
 label_map = string_int_label_map_pb2.StringIntLabelMap()
 
+# For an image, extracts all necessary information and returns the corresponding tf_example
 def create_tf_example(data):
-  print('Start create tf example...')
-  size = data.find('size')
-  height = int(size.find('height').text) # Image height   #get from actual file, don't hardcode
-  width = int(size.find('width').text) # Image width
-  print("Height: ", height, " Width: ", width)
-  image_format = b'jpg'
 
+  # Gets basic image info
+  size = data.find('size')
+  height = int(size.find('height').text)
+  width = int(size.find('width').text)
+  image_format = b'jpg'
+  filename = 'VOCdevkit/VOC2012/JPEGImages/' + data.find('filename').text
+
+  # Bounding box and label lists
   xmins = []
   xmaxs = [] 
   ymins = [] 
   ymaxs = [] 
   classes_text = [] 
   classes = [] 
-  filename = 'VOCdevkit/VOC2012/JPEGImages/' + data.find('filename').text
   
+  # Gets encoded image data
   with open(filename, "rb") as f2:
-    encoded_image_data = f2.read() #solved by adding "rb" to open. specifies that it's binary?
+    encoded_image_data = f2.read() #rb is necessary for binary
+
+    # Iterates over objects in an image
     for item in data.findall("object"):
-      print("Start object...")
-      #labels
+
+      # Get label and add to label map if not already there
       label = item.find('name').text
       if label not in labels:
-        #print("new label: " + label)
         labels.append(label)
         newlabel = string_int_label_map_pb2.StringIntLabelMapItem()
         newlabel.name = label
@@ -53,18 +57,18 @@ def create_tf_example(data):
         lid = newlabel.id
       else: 
         lid = labels.index(label)
-      #end labels
 
-      print("Label: ", label, " ID: ", lid)
       classes_text.append(label.encode())
       classes.append(lid)
+
+      # Get normalized bounding box values
       bndbox = item.find('bndbox')
       xmins.append(float(bndbox.find('xmin').text)/width)
       ymins.append(float(bndbox.find('ymin').text)/height)
       xmaxs.append(float(bndbox.find('xmax').text)/width)
       ymaxs.append(float(bndbox.find('ymax').text)/height)
-      print("xmin: ", xmins[-1], " ymin: ", ymins[-1], " xmax: ", xmaxs[-1], " ymax: ", ymaxs[-1])
 
+    # Create tf_example
     tf_example = tf.train.Example(features=tf.train.Features(feature={
     'image/height': dataset_util.int64_feature(height),
     'image/width': dataset_util.int64_feature(width),
@@ -82,26 +86,29 @@ def create_tf_example(data):
   return tf_example
 
 def main():
-  index = 0
-  for annotation in os.listdir("VOCdevkit/VOC2012/Annotations/"):
-    if annotation.startswith("2012"):
-      tree = ET.parse('VOCdevkit/VOC2012/Annotations/' + annotation)
-      data = tree.getroot()
+  index = 0 # Enumerates datapoints (one per image)
+  num_shards = 3 # ~800 images per shard
+  output_filebase = 'data/file.tfrecord'
 
-      num_shards = 3
-      output_filebase = 'data/file.tfrecord'
-      with contextlib2.ExitStack() as tf_record_close_stack:
-        output_tfrecords = tf_record_creation_util.open_sharded_output_tfrecords(
+  with contextlib2.ExitStack() as tf_record_close_stack:
+    # Creates a list of output tfrecord files based on num_shards
+    output_tfrecords = tf_record_creation_util.open_sharded_output_tfrecords(
           tf_record_close_stack, output_filebase, num_shards)
-        
+
+    for annotation in os.listdir("VOCdevkit/VOC2012/Annotations/"):
+      if annotation.startswith("2012"):
+        # Parses the xml file as an ElementTree
+        tree = ET.parse('VOCdevkit/VOC2012/Annotations/' + annotation)
+        data = tree.getroot()
+          
+        # Gets a tf_example(?) and writes it to a tfrecord shard.
+        # Cycles through each shard before revisiting.
         tf_example = create_tf_example(data)
-        #import pudb; pu.db #a breakpoint
-        print("Index: ", index)
         output_shard_index = index % num_shards
-        print("Output shard index: ", output_shard_index)
         output_tfrecords[output_shard_index].write(tf_example.SerializeToString())
         index = index + 1
 
+  # Writes the label map an output file
   with open(LABEL_MAP_NAME, 'w') as f:
     f.write(text_format.MessageToString(label_map))
 
